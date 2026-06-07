@@ -4,7 +4,7 @@ export class OpenAISummarizer implements Summarizer {
   constructor(
     private apiKey: string,
     private baseUrl: string = "https://api.openai.com/v1/chat/completions",
-    private model: string = "gpt-5-mini",
+    private model: string = "gpt-4o-mini",
   ) {}
 
   async summarize(

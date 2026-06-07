@@ -7,6 +7,9 @@ import { SummarizationManager } from '../core/summarization-manager.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { Request, Response } from 'express';
+import { TokenManager } from '../session/token.js';
+import { createSessionRouter } from '../web/session.js';
+import { scoreConversations } from '../core/search.js';
 
 const storage = new SQLiteProvider(process.env.MEMCP_DB_PATH || 'memcp.db');
 const embeddingManager = new EmbeddingManager({
@@ -22,6 +25,9 @@ const summarizationManager = new SummarizationManager({
 });
 
 const API_KEY = process.env.MEMCP_API_KEY;
+const PUBLIC_URL_BASE = process.env.MEMCP_PUBLIC_URL || `http://localhost:${process.env.PORT || 3000}`;
+
+const tokenManager = new TokenManager();
 
 const app = express();
 let transport: SSEServerTransport | null = null;
@@ -29,7 +35,6 @@ let server: Server | null = null;
 
 // API key authentication middleware
 function apiKeyMiddleware(req: Request, res: Response, next: Function) {
-  // Skip auth if no API key is configured (allows open access when unset)
   if (!API_KEY) {
     return next();
   }
@@ -50,11 +55,14 @@ app.get('/health', (req, res) => {
   res.send('OK');
 });
 
-// Apply API key middleware to all routes except /health
+// Apply API key middleware to all routes except /health and /session/*
 app.use((req, res, next) => {
-  if (req.path === '/health') return next();
+  if (req.path === '/health' || req.path.startsWith('/session')) return next();
   apiKeyMiddleware(req, res, next);
 });
+
+// Mount session web bridge routes (no API key required — uses token-based auth)
+app.use('/session', createSessionRouter(tokenManager, storage, embeddingManager));
 
 async function setupServer() {
   server = new Server(
@@ -64,6 +72,20 @@ async function setupServer() {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
+      {
+        name: 'create_session',
+        description: 'Create a short-lived web session for ChatGPT/Gemini to access and store memories via GET requests',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectId: { type: 'string', description: 'Project/application identifier' },
+            harnessId: { type: 'string', description: 'Harness/framework identifier' },
+            agentId: { type: 'string', description: 'Agent identifier' },
+            category: { type: 'string', description: 'Optional category for the session scope' },
+          },
+          required: ['projectId', 'harnessId', 'agentId'],
+        },
+      },
       {
         name: 'store_conversation',
         description: 'Store a conversation with metadata',
@@ -115,6 +137,29 @@ async function setupServer() {
     const { name, arguments: args } = request.params;
     try {
       switch (name) {
+        case 'create_session': {
+          const params = z.object({
+            projectId: z.string(),
+            harnessId: z.string(),
+            agentId: z.string(),
+            category: z.string().optional(),
+          }).parse(args);
+          const session = tokenManager.createSession(params);
+          const sessionUrl = `${PUBLIC_URL_BASE}/session/${session.token}`;
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                sessionUrl,
+                token: session.token,
+                expiresIn: session.expiresInMs,
+                projectId: session.projectId,
+                harnessId: session.harnessId,
+                agentId: session.agentId,
+              }, null, 2),
+            }],
+          };
+        }
         case 'store_conversation': {
           const params = z.object({
             projectId: z.string(), harnessId: z.string(), agentId: z.string(),
@@ -139,10 +184,7 @@ async function setupServer() {
           const params = z.object({ query: z.string(), limit: z.number().optional() }).parse(args);
           const queryEmbedding = await embeddingManager.embed(params.query);
           const allConversations = await storage.searchConversations('', 1000);
-          const scored = allConversations
-            .filter(c => c.summaryEmbedding)
-            .map(c => ({ conversation: c, similarity: queryEmbedding.reduce((acc, val, i) => acc + val * (c.summaryEmbedding![i] || 0), 0) }))
-            .sort((a, b) => b.similarity - a.similarity);
+          const scored = scoreConversations(allConversations, queryEmbedding);
           const results = scored.slice(0, params.limit || 10).map(s => s.conversation);
           return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
         }
@@ -172,15 +214,13 @@ async function setupServer() {
 
 app.get('/sse', async (req: Request, res: Response) => {
   if (server) {
-    // Use the existing server and just reconnect the transport
-    // Note: This might not be perfectly correct for multiple clients, but works for a single test.
     try {
       await server!.close();
     } catch (e) {}
   } else {
     await setupServer();
   }
-  
+
   transport = new SSEServerTransport('/messages', res);
   await server!.connect(transport);
 });

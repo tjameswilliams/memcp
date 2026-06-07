@@ -14,16 +14,23 @@ async function callToolViaSse(
   toolName: string,
   args: Record<string, any>
 ): Promise<string[]> {
-  const sseResponse = await fetch(`${BASE_URL}/sse`);
-  const reader = sseResponse.body?.getReader();
+  const abortController = new AbortController();
+  const sseResponse = await fetch(`${BASE_URL}/sse`, {
+    signal: abortController.signal,
+  });
+  const reader = sseResponse.body!.getReader();
   const sseMessages: string[] = [];
 
   const readSse = async () => {
     const decoder = new TextDecoder();
-    while (true) {
-      const { value, done } = await reader!.read();
-      if (done) break;
-      sseMessages.push(decoder.decode(value, { stream: true }));
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        sseMessages.push(decoder.decode(value, { stream: true }));
+      }
+    } catch (e) {
+      // Expected when abortController aborts the connection
     }
   };
   const ssePromise = readSse();
@@ -60,10 +67,9 @@ async function callToolViaSse(
     await new Promise(resolve => setTimeout(resolve, 100));
   }
 
-  // Cleanup SSE stream
-  ssePromise.catch(() => {});
-  reader?.releaseLock();
-  await sseResponse.body?.cancel();
+  // Cleanup SSE stream by aborting
+  abortController.abort();
+  await ssePromise.catch(() => {});
 
   return sseMessages;
 }
@@ -289,21 +295,27 @@ describe('MemCP E2E SSE Tests (with API key auth)', () => {
 
   it('should reject POST /messages with invalid API key after establishing SSE', async () => {
     // Establish SSE session with valid key
+    const abortController = new AbortController();
     const sseRes = await fetch(`${AUTH_BASE_URL}/sse`, {
-      headers: { 'x-api-key': TEST_API_KEY }
+      headers: { 'x-api-key': TEST_API_KEY },
+      signal: abortController.signal,
     });
     expect(sseRes.status).toBe(200);
-    const reader = sseRes.body?.getReader();
+    const reader = sseRes.body!.getReader();
     const sseMessages: string[] = [];
     const readSse = async () => {
       const decoder = new TextDecoder();
-      while (true) {
-        const { value, done } = await reader!.read();
-        if (done) break;
-        sseMessages.push(decoder.decode(value, { stream: true }));
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          sseMessages.push(decoder.decode(value, { stream: true }));
+        }
+      } catch (e) {
+        // Expected when abortController aborts
       }
     };
-    readSse();
+    const ssePromise = readSse();
 
     // Get sessionId
     let sessionId: string | undefined;
@@ -324,26 +336,32 @@ describe('MemCP E2E SSE Tests (with API key auth)', () => {
     });
     expect(res.status).toBe(401);
 
-    reader?.releaseLock();
-    await sseRes.body?.cancel();
+    abortController.abort();
+    await ssePromise.catch(() => {});
   }, 15000);
 
   it('should successfully call a tool with valid API key', async () => {
+    const abortController = new AbortController();
     const sseRes = await fetch(`${AUTH_BASE_URL}/sse`, {
-      headers: { 'x-api-key': TEST_API_KEY }
+      headers: { 'x-api-key': TEST_API_KEY },
+      signal: abortController.signal,
     });
     expect(sseRes.status).toBe(200);
-    const reader = sseRes.body?.getReader();
+    const reader = sseRes.body!.getReader();
     const sseMessages: string[] = [];
     const readSse = async () => {
       const decoder = new TextDecoder();
-      while (true) {
-        const { value, done } = await reader!.read();
-        if (done) break;
-        sseMessages.push(decoder.decode(value, { stream: true }));
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          sseMessages.push(decoder.decode(value, { stream: true }));
+        }
+      } catch (e) {
+        // Expected when abortController aborts
       }
     };
-    readSse();
+    const ssePromise = readSse();
 
     // Get sessionId
     let sessionId: string | undefined;
@@ -369,7 +387,7 @@ describe('MemCP E2E SSE Tests (with API key auth)', () => {
     });
     expect(res.ok).toBe(true);
 
-    reader?.releaseLock();
-    await sseRes.body?.cancel();
+    abortController.abort();
+    await ssePromise.catch(() => {});
   }, 15000);
 });

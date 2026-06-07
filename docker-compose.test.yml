@@ -8,3 +8,4 @@ services:
     environment:
       - MEMCP_DB_PATH=/app/data/memcp.db
       - MEMCP_PORT=3000
+      - MEMCP_PUBLIC_URL=http://127.0.0.1:35714

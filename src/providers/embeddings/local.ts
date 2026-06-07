@@ -1,4 +1,3 @@
-import { pipeline } from '@xenova/transformers';
 import { EmbeddingProvider } from '../../core/embeddings.js';
 
 export class LocalEmbeddingProvider implements EmbeddingProvider {
@@ -6,6 +5,7 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
   public modelName = 'Xenova/all-MiniLM-L6-v2';
 
   async init() {
+    const { pipeline } = await import('@xenova/transformers');
     this.extractor = await pipeline('feature-extraction', this.modelName);
   }
 

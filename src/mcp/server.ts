@@ -8,8 +8,12 @@ import { z } from 'zod';
 import { SQLiteProvider } from '../providers/sqlite.js';
 import { EmbeddingManager } from '../core/embedding-manager.js';
 import { SummarizationManager } from '../core/summarization-manager.js';
+import { TokenManager } from '../session/token.js';
+import { scoreConversations } from '../core/search.js';
 
 const storage = new SQLiteProvider();
+const tokenManager = new TokenManager();
+const PUBLIC_URL_BASE = process.env.MEMCP_PUBLIC_URL || 'http://localhost:3000';
 const embeddingManager = new EmbeddingManager({
   provider: process.env.MEMCP_EMBEDDING_PROVIDER as 'local' | 'openai' || 'local',
   apiKey: process.env.MEMCP_EMBEDDING_KEY,
@@ -37,6 +41,20 @@ const server = new Server(
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
+      {
+        name: 'create_session',
+        description: 'Create a short-lived web session for ChatGPT/Gemini to access and store memories via GET requests',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectId: { type: 'string', description: 'Project/application identifier' },
+            harnessId: { type: 'string', description: 'Harness/framework identifier' },
+            agentId: { type: 'string', description: 'Agent identifier' },
+            category: { type: 'string', description: 'Optional category for the session scope' },
+          },
+          required: ['projectId', 'harnessId', 'agentId'],
+        },
+      },
       {
         name: 'store_conversation',
         description: 'Store a conversation with metadata for later retrieval',
@@ -111,6 +129,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     switch (name) {
+      case 'create_session': {
+        const params = z.object({
+          projectId: z.string(),
+          harnessId: z.string(),
+          agentId: z.string(),
+          category: z.string().optional(),
+        }).parse(args);
+        const session = tokenManager.createSession(params);
+        const sessionUrl = `${PUBLIC_URL_BASE}/session/${session.token}`;
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              sessionUrl,
+              token: session.token,
+              expiresIn: session.expiresInMs,
+              projectId: session.projectId,
+              harnessId: session.harnessId,
+              agentId: session.agentId,
+            }, null, 2),
+          }],
+        };
+      }
       case 'store_conversation': {
         const params = z.object({
           projectId: z.string(),
@@ -165,16 +206,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }).parse(args);
 
         const queryEmbedding = await embeddingManager.embed(params.query);
-        const allConversations = await storage.searchConversations('', 1000); // Get a reasonable batch
+        const allConversations = await storage.searchConversations('', 1000);
         
-        const scored = allConversations
-          .filter(c => c.summaryEmbedding)
-          .map(c => {
-            const similarity = queryEmbedding.reduce((acc, val, i) => acc + val * (c.summaryEmbedding![i] || 0), 0);
-            return { conversation: c, similarity };
-          })
-          .sort((a, b) => b.similarity - a.similarity);
-
+        const scored = scoreConversations(allConversations, queryEmbedding);
         const results = scored.slice(0, params.limit || 10).map(s => s.conversation);
         
         return {
