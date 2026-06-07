@@ -1,0 +1,21 @@
+services:
+  memcp:
+    build: .
+    ports:
+      - "3001:3000"
+    volumes:
+      - memcp-data:/app/data
+    environment:
+      - MEMCP_DB_PATH=/app/data/memcp.db
+      - MEMCP_EMBEDDING_PROVIDER=local
+      # Set an API key to lock down the server. Generate one with:
+      #   npm run cli generate-api-key
+      # - MEMCP_API_KEY=memcp-your-generated-key-here
+      # Uncomment below to use OpenAI embeddings:
+      # - MEMCP_EMBEDDING_PROVIDER=openai
+      # - MEMCP_EMBEDDING_KEY=sk-your-api-key-here
+      # - MEMCP_EMBEDDING_URL=https://api.openai.com/v1
+      # - MEMCP_EMBEDDING_MODEL=text-embedding-3-small
+
+volumes:
+  memcp-data:

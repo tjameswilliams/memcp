@@ -1,0 +1,10 @@
+services:
+  memcp:
+    build: .
+    ports:
+      - "35714:3000"
+    volumes:
+      - ./tests/e2e/data:/app/data
+    environment:
+      - MEMCP_DB_PATH=/app/data/memcp.db
+      - MEMCP_PORT=3000
